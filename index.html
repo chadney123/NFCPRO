@@ -51,19 +51,34 @@
             }
         }
 
-        // --- 3. HARD 8 AM RESET ---
-        function checkAutoReset() {
-            const now = new Date();
-            const lastReset = localStorage.getItem('lastResetDay');
-            const today = now.toLocaleDateString();
+   // --- IMPROVED KIOSK RESET ---
+function checkAutoReset() {
+    const now = new Date();
+    const currentHour = now.getHours();
+    const lastResetDay = localStorage.getItem('lastResetDay');
+    const todayStr = now.toLocaleDateString();
 
-            if (now.getHours() >= 8 && lastReset !== today) {
+            // Trigger if it's 8 AM or later AND we haven't reset today
+            if (currentHour >= 8 && lastResetDay !== todayStr) {
+                console.log("Kiosk Reset Triggered");
+                
+                // Clear everything
                 localStorage.clear();
-                localStorage.setItem('lastResetDay', today);
-                location.reload();
+                localStorage.setItem('lastResetDay', todayStr);
+                
+                // Force a clean reload to the login screen
+                window.location.href = window.location.pathname + '?reset=' + Date.now(); 
             }
         }
-        setInterval(checkAutoReset, 15000);
+        
+        // Check every 5 seconds (Passive)
+        setInterval(checkAutoReset, 5000);
+        
+        // Check on every interaction (Active)
+        document.addEventListener('touchstart', checkAutoReset);
+        document.addEventListener('visibilitychange', () => {
+            if (document.visibilityState === 'visible') checkAutoReset();
+        });
 
         // --- 4. NFC & SYNC ---
         async function startNFC() {
