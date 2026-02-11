@@ -5,6 +5,7 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
     <title>Shift Tracker Pro</title>
     <link rel="manifest" href="manifest.json">
+    <link rel="apple-touch-icon" href="logo-192.png">
     <meta name="theme-color" content="#2ecc71">
     <style>
         body { transition: background-color 0.6s ease; background-color: #2ecc71; font-family: sans-serif; display: flex; flex-direction: column; align-items: center; justify-content: center; height: 100vh; margin: 0; color: white; text-align: center; overflow: hidden; }
@@ -31,6 +32,14 @@
     <div id="lock-info">Wake Lock: Inactive | Reset: 08:00 AM</div>
 
     <script>
+        if ('serviceWorker' in navigator) {
+            window.addEventListener('load', () => {
+                navigator.serviceWorker.register('sw.js')
+                    .then(reg => console.log('Service Worker Registered'))
+                    .catch(err => console.log('Service Worker Failed', err));
+            });
+        }
+        
         // --- CONFIGURATION ---
         const WEB_APP_URL = "https://script.google.com/macros/s/AKfycbwRM79KhKzbj4i7T11T9azf33_ooYdc9n0RVTMLmjns69yOnwHz7FqqE5y8p6xC0IsC/exec"; 
         
