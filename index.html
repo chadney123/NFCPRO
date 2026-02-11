@@ -1,0 +1,257 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+    <title>Shift Tracker Pro</title>
+    <link rel="manifest" href="manifest.json">
+    <meta name="theme-color" content="#2ecc71">
+    <style>
+        body { transition: background-color 0.6s ease; background-color: #2ecc71; font-family: sans-serif; display: flex; flex-direction: column; align-items: center; justify-content: center; height: 100vh; margin: 0; color: white; text-align: center; overflow: hidden; }
+        .amber { background-color: #f39c12 !important; }
+        .red { background-color: #e74c3c !important; }
+        #status { font-size: 2.2rem; font-weight: bold; margin-bottom: 10px; padding: 0 20px; }
+        #sub-status { font-size: 1.1rem; opacity: 0.9; margin-bottom: 30px; height: 1.2em; }
+        #input-container { width: 100%; display: flex; flex-direction: column; align-items: center; }
+        input { padding: 18px; font-size: 1.4rem; border-radius: 12px; border: none; margin-bottom: 20px; width: 85%; max-width: 350px; text-align: center; color: #333; }
+        button { padding: 20px 50px; font-size: 1.3rem; cursor: pointer; border: none; border-radius: 50px; background: white; color: #2ecc71; font-weight: bold; box-shadow: 0 4px 15px rgba(0,0,0,0.2); }
+        #lock-info { position: fixed; bottom: 15px; font-size: 0.75rem; opacity: 0.5; }
+    </style>
+</head>
+<body>
+
+    <div id="status">Welcome</div>
+    <div id="sub-status">Enter name to begin</div>
+
+    <div id="input-container">
+        <input type="text" id="userName" placeholder="Type Name Here..." autocomplete="off">
+        <button id="startBtn">Begin Shift</button>
+    </div>
+
+    <div id="lock-info">Wake Lock: Inactive | Reset: 08:00 AM</div>
+
+    <script>
+        // --- CONFIGURATION ---
+        const WEB_APP_URL = "https://script.google.com/macros/s/AKfycbwRM79KhKzbj4i7T11T9azf33_ooYdc9n0RVTMLmjns69yOnwHz7FqqE5y8p6xC0IsC/exec"; 
+        
+        // --- GLOBAL VARIABLES ---
+        const body = document.body;
+        const statusDisplay = document.getElementById('status');
+        const subStatus = document.getElementById('sub-status');
+        const nameInput = document.getElementById('userName');
+        const inputContainer = document.getElementById('input-container');
+        const lockInfo = document.getElementById('lock-info');
+        
+        let activeTag = null; 
+        let breadcrumbs = [];
+        let isProcessing = false;
+        let wakeLock = null;
+
+        // --- SERVICE WORKER ---
+        if ('serviceWorker' in navigator) {
+            navigator.serviceWorker.register('sw.js').catch(console.error);
+        }
+
+        // --- PREVENT BACK BUTTON ---
+        history.pushState(null, null, location.href);
+        window.onpopstate = () => history.pushState(null, null, location.href);
+
+        // --- 1. ALWAYS ON DISPLAY (WAKE LOCK) ---
+        async function requestWakeLock() {
+            if ('wakeLock' in navigator) {
+                try {
+                    wakeLock = await navigator.wakeLock.request('screen');
+                    lockInfo.innerText = "Wake Lock: ACTIVE | Reset: 08:00 AM";
+                    wakeLock.addEventListener('release', () => {
+                        lockInfo.innerText = "Wake Lock: LOST - Retrying...";
+                        requestWakeLock(); // Immediately try to get it back
+                    });
+                } catch (err) {
+                    lockInfo.innerText = "Wake Lock: Failed (Keep screen active manually)";
+                }
+            }
+        }
+
+        // Force Re-acquire when tab comes back to view
+        document.addEventListener('visibilitychange', () => {
+            if (document.visibilityState === 'visible' && localStorage.getItem('userName')) {
+                requestWakeLock();
+                checkAutoReset(); // Check time immediately upon waking
+            }
+        });
+
+        // --- 2. 8:00 AM AUTO RESET ---
+        function checkAutoReset() {
+            const now = new Date();
+            // If it is past 8:00 AM (Hour 8)
+            if (now.getHours() >= 8) {
+                const todayStr = now.toLocaleDateString();
+                const lastReset = localStorage.getItem('lastResetDate');
+
+                // If we haven't reset today yet
+                if (lastReset !== todayStr) {
+                    console.log("Triggering 8 AM Reset");
+                    // 1. Force Logout Logic
+                    if (activeTag) {
+                        // Optional: Try to send one last "Auto-Out" if you want
+                        // syncToSheet(activeTag, "AUTO-OUT"); 
+                    }
+                    
+                    // 2. Clear Data
+                    localStorage.clear();
+                    
+                    // 3. Mark today as reset so we don't loop reset
+                    localStorage.setItem('lastResetDate', todayStr);
+                    
+                    // 4. Reload page to login screen
+                    location.reload(); 
+                }
+            }
+        }
+
+        // Run this check every 10 seconds
+        setInterval(checkAutoReset, 10000);
+
+
+        // --- 3. TRACKING LOGIC ---
+        function startGlobalTracking() {
+            if ("geolocation" in navigator) {
+                navigator.geolocation.watchPosition((pos) => {
+                    // Logic: Only track between certain minutes if accuracy is good
+                    // Removing complex time filters to ensure breadcrumbs work more reliably
+                    if (pos.coords.accuracy < 50) {
+                        const pt = `${pos.coords.latitude.toFixed(6)},${pos.coords.longitude.toFixed(6)}`;
+                        if (breadcrumbs[breadcrumbs.length - 1] !== pt) {
+                            breadcrumbs.push(pt);
+                            localStorage.setItem('breadcrumbs', JSON.stringify(breadcrumbs));
+                        }
+                    }
+                }, null, { enableHighAccuracy: true, maximumAge: 0 });
+            }
+        }
+
+        // --- 4. NFC LOGIC ---
+        async function startNFC() {
+            if ("NDEFReader" in window) {
+                try {
+                    const ndef = new NDEFReader();
+                    await ndef.scan();
+                    ndef.onreading = ({ message, serialNumber }) => {
+                        if (isProcessing) return;
+                        isProcessing = true;
+
+                        let extractedText = "";
+                        const decoder = new TextDecoder();
+                        for (const record of message.records) {
+                            if (record.recordType === "text") extractedText = decoder.decode(record.data);
+                        }
+                        const tagValue = extractedText || serialNumber;
+                        
+                        handleScan(tagValue);
+                        
+                        setTimeout(() => isProcessing = false, 3000);
+                    };
+                } catch (e) { console.warn("NFC Error", e); }
+            }
+        }
+
+        function handleScan(tagValue) {
+            if (!activeTag) {
+                // CLOCK IN
+                activeTag = tagValue;
+                localStorage.setItem('activeTag', activeTag);
+                updateUI("Location Active", "Logged at: " + tagValue, 'amber');
+                syncToSheet(tagValue, "IN");
+            } else if (activeTag === tagValue) {
+                // CLOCK OUT
+                syncToSheet(tagValue, "OUT");
+                activeTag = null;
+                breadcrumbs = [];
+                localStorage.removeItem('activeTag');
+                localStorage.removeItem('breadcrumbs');
+                
+                updateUI("Location Cleared", "Ready for next Location", '');
+                setTimeout(() => { 
+                    if(!activeTag) updateUI("Shift Active: " + localStorage.getItem('userName'), "Scan NFC to log", ''); 
+                }, 2500);
+            } else {
+                // WRONG TAG
+                const oldStatus = statusDisplay.innerText;
+                const oldSub = subStatus.innerText;
+                updateUI("Wrong Tag!", "Scan " + activeTag + " to exit", 'red');
+                setTimeout(() => { updateUI(oldStatus, oldSub, activeTag ? 'amber' : ''); }, 3000);
+            }
+        }
+
+        // --- 5. DATA SYNC (USING PHONE TIME) ---
+        async function syncToSheet(tagText, action) {
+            let mapLink = "N/A";
+            if (action === "OUT" && breadcrumbs.length > 0) {
+                mapLink = "https://www.google.com/maps/dir/" + breadcrumbs.join("/");
+            }
+            
+            // Generate Phone Time
+            const now = new Date();
+            const phoneTimeStr = now.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' });
+
+            const payload = { 
+                tagText, 
+                name: localStorage.getItem('userName'), 
+                shiftStarted: localStorage.getItem('shiftStarted'),
+                action, 
+                location: mapLink, 
+                phoneTime: phoneTimeStr // <--- SENDING PHONE TIME
+            };
+            
+            fetch(WEB_APP_URL, { method: 'POST', mode: 'no-cors', body: JSON.stringify(payload) });
+        }
+
+        function updateUI(status, sub, bgColorClass) {
+            statusDisplay.innerText = status;
+            subStatus.innerText = sub;
+            body.className = bgColorClass;
+        }
+
+        // --- 6. STARTUP & REHYDRATE ---
+        function rehydrate() {
+            // First, run the reset check to ensure we shouldn't be here
+            checkAutoReset();
+
+            const savedName = localStorage.getItem('userName');
+            
+            if (savedName) {
+                inputContainer.style.display = 'none';
+                activeTag = localStorage.getItem('activeTag');
+                breadcrumbs = JSON.parse(localStorage.getItem('breadcrumbs')) || [];
+                
+                if (activeTag) {
+                    updateUI("Location Active", "Logged: " + activeTag, 'amber');
+                } else {
+                    updateUI("Shift Active: " + savedName, "Scan NFC to begin", '');
+                }
+
+                startGlobalTracking();
+                startNFC();
+                requestWakeLock();
+            }
+        }
+
+        document.getElementById('startBtn').onclick = () => {
+            const name = nameInput.value.trim();
+            if (!name) return alert("Enter name");
+            
+            // Set Start Time
+            if (!localStorage.getItem('shiftStarted')) {
+                const now = new Date();
+                localStorage.setItem('shiftStarted', now.toLocaleTimeString([], {hour: '2-digit', minute:'2-digit'}));
+            }
+            
+            localStorage.setItem('userName', name);
+            rehydrate();
+        };
+
+        window.onload = rehydrate;
+
+    </script>
+</body>
+</html>
