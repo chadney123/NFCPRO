@@ -1,0 +1,157 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+    <title>Shift Tracker Pro</title>
+    <link rel="manifest" href="manifest.json">
+    <meta name="theme-color" content="#2ecc71">
+    <style>
+        body { transition: background-color 0.6s ease; background-color: #2ecc71; font-family: sans-serif; display: flex; flex-direction: column; align-items: center; justify-content: center; height: 100vh; margin: 0; color: white; text-align: center; overflow: hidden; }
+        .amber { background-color: #f39c12 !important; }
+        .red { background-color: #e74c3c !important; }
+        #status { font-size: 2.2rem; font-weight: bold; margin-bottom: 10px; padding: 0 20px; }
+        #sub-status { font-size: 1.1rem; opacity: 0.9; margin-bottom: 30px; height: 1.2em; }
+        #input-container { width: 100%; display: flex; flex-direction: column; align-items: center; }
+        input { padding: 18px; font-size: 1.4rem; border-radius: 12px; border: none; margin-bottom: 20px; width: 85%; max-width: 350px; text-align: center; color: #333; }
+        button { padding: 20px 50px; font-size: 1.3rem; cursor: pointer; border: none; border-radius: 50px; background: white; color: #2ecc71; font-weight: bold; box-shadow: 0 4px 15px rgba(0,0,0,0.2); }
+        #lock-info { position: fixed; bottom: 15px; font-size: 0.75rem; opacity: 0.5; }
+    </style>
+</head>
+<body>
+
+    <div id="status">Welcome</div>
+    <div id="sub-status">Enter name to begin</div>
+
+    <div id="input-container">
+        <input type="text" id="userName" placeholder="Type Name Here..." autocomplete="off">
+        <button id="startBtn">Begin Shift</button>
+    </div>
+
+    <div id="lock-info">Wake Lock: Inactive | Reset: 08:00 AM</div>
+
+    <script>
+        // --- 1. SETTINGS ---
+        const WEB_APP_URL = "https://script.google.com/macros/s/AKfycbwRM79KhKzbj4i7T11T9azf33_ooYdc9n0RVTMLmjns69yOnwHz7FqqE5y8p6xC0IsC/exec"; 
+        
+        let activeTag = null; 
+        let breadcrumbs = [];
+        let wakeLock = null;
+        let isProcessing = false;
+
+        if ('serviceWorker' in navigator) { navigator.serviceWorker.register('sw.js'); }
+
+        // --- 2. SCREEN ALWAYS ON (WAKE LOCK) ---
+        async function requestWakeLock() {
+            if ('wakeLock' in navigator) {
+                try {
+                    wakeLock = await navigator.wakeLock.request('screen');
+                    document.getElementById('lock-info').innerText = "Wake Lock: ACTIVE | Reset: 08:00 AM";
+                } catch (err) { console.log("Wake Lock Failed"); }
+            }
+        }
+
+        // --- 3. HARD 8 AM RESET ---
+        function checkAutoReset() {
+            const now = new Date();
+            const lastReset = localStorage.getItem('lastResetDay');
+            const today = now.toLocaleDateString();
+
+            if (now.getHours() >= 8 && lastReset !== today) {
+                localStorage.clear();
+                localStorage.setItem('lastResetDay', today);
+                location.reload();
+            }
+        }
+        setInterval(checkAutoReset, 15000);
+
+        // --- 4. NFC & SYNC ---
+        async function startNFC() {
+            if ("NDEFReader" in window) {
+                try {
+                    const ndef = new NDEFReader();
+                    await ndef.scan();
+                    ndef.onreading = ({ message, serialNumber }) => {
+                        if (isProcessing) return;
+                        isProcessing = true;
+                        let text = "";
+                        const decoder = new TextDecoder();
+                        for (const record of message.records) {
+                            if (record.recordType === "text") text = decoder.decode(record.data);
+                        }
+                        handleScan(text || serialNumber);
+                        setTimeout(() => isProcessing = false, 3000);
+                    };
+                } catch (e) { alert("NFC Error: Use HTTPS"); }
+            }
+        }
+
+        function handleScan(tagValue) {
+            const now = new Date();
+            const timeStr = now.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' });
+
+            if (!activeTag) {
+                activeTag = tagValue;
+                localStorage.setItem('activeTag', activeTag);
+                updateUI("Location Active", "Logged at: " + tagValue, 'amber');
+                syncToSheet(tagValue, "IN", timeStr);
+            } else if (activeTag === tagValue) {
+                syncToSheet(tagValue, "OUT", timeStr);
+                activeTag = null;
+                localStorage.removeItem('activeTag');
+                updateUI("Location Cleared", "Ready for next scan", '');
+            } else {
+                updateUI("Wrong Tag!", "Must scan " + activeTag, 'red');
+                setTimeout(() => updateUI("Location Active", "Logged: " + activeTag, 'amber'), 3000);
+            }
+        }
+
+        async function syncToSheet(tagText, action, phoneTime) {
+            let mapLink = "N/A";
+            if (action === "OUT" && breadcrumbs.length > 0) {
+                mapLink = "https://www.google.com/maps/dir/" + breadcrumbs.join("/");
+            }
+            const payload = { 
+                tagText, action, phoneTime,
+                name: localStorage.getItem('userName'), 
+                shiftStarted: localStorage.getItem('shiftStarted'),
+                location: mapLink
+            };
+            fetch(WEB_APP_URL, { method: 'POST', mode: 'no-cors', body: JSON.stringify(payload) });
+        }
+
+        function updateUI(status, sub, color) {
+            document.getElementById('status').innerText = status;
+            document.getElementById('sub-status').innerText = sub;
+            document.body.className = color;
+        }
+
+        // --- 5. BUTTONS ---
+        document.getElementById('startBtn').onclick = () => {
+            const name = document.getElementById('userName').value.trim();
+            if (!name) return alert("Enter Name");
+            const startTime = new Date().toLocaleTimeString([], {hour: '2-digit', minute:'2-digit'});
+            
+            localStorage.setItem('userName', name);
+            localStorage.setItem('shiftStarted', startTime);
+            
+            document.getElementById('input-container').style.display = 'none';
+            updateUI("Shift Active: " + name, "Scan NFC to log", '');
+            
+            requestWakeLock();
+            startNFC();
+            syncToSheet("START", "SHIFT START", startTime);
+        };
+
+        window.onload = () => {
+            if (localStorage.getItem('userName')) {
+                document.getElementById('input-container').style.display = 'none';
+                activeTag = localStorage.getItem('activeTag');
+                updateUI(activeTag ? "Location Active" : "Shift Active", "Ready", activeTag ? 'amber' : '');
+                requestWakeLock();
+                startNFC();
+            }
+        };
+    </script>
+</body>
+</html>
