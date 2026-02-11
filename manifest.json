@@ -1,20 +1,24 @@
 {
   "name": "Shift Tracker Pro",
   "short_name": "ShiftTracker",
+  "description": "NFC Shift and Location Tracking System",
   "start_url": "index.html",
   "display": "standalone",
   "background_color": "#2ecc71",
   "theme_color": "#2ecc71",
+  "orientation": "portrait",
   "icons": [
     {
       "src": "logo-192.png",
+      "type": "image/png",
       "sizes": "192x192",
-      "type": "image/png"
+      "purpose": "any maskable"
     },
     {
       "src": "logo-512.png",
+      "type": "image/png",
       "sizes": "512x512",
-      "type": "image/png"
+      "purpose": "any maskable"
     }
   ]
 }
