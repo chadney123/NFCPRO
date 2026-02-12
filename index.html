@@ -20,9 +20,8 @@
             color: white; 
             text-align: center; 
             overflow: hidden;
-            /* --- TEXT SELECTION LOCK --- */
+            /* Disable selection */
             -webkit-user-select: none;
-            -ms-user-select: none;
             user-select: none;
             -webkit-touch-callout: none;
         }
@@ -41,7 +40,6 @@
             max-width: 350px; 
             text-align: center; 
             color: #333;
-            /* Allow typing but no selection */
             -webkit-user-select: text;
             user-select: text;
         }
@@ -56,13 +54,14 @@
 
     <div id="input-container">
         <input type="text" id="userName" placeholder="Type Name Here..." autocomplete="off">
-        <button id="startBtn">Begin Shift</button>
+        <button id="startBtn" onclick="startShift()">Begin Shift</button>
     </div>
 
     <div id="lock-info">Wake Lock: Inactive | Reset: 08:00 AM</div>
 
     <script>
         // --- 1. CONFIGURATION ---
+        // PASTE YOUR GOOGLE SCRIPT URL BETWEEN THE QUOTES BELOW
         const WEB_APP_URL = "https://script.google.com/macros/s/AKfycbwRM79KhKzbj4i7T11T9azf33_ooYdc9n0RVTMLmjns69yOnwHz7FqqE5y8p6xC0IsC/exec"; 
         
         let activeTag = null; 
@@ -70,17 +69,47 @@
         let isProcessing = false;
         let wakeLock = null;
 
-        // --- 2. SERVICE WORKER & BROWSER LOCKS ---
+        // --- 2. STARTUP LOGIC ---
         if ('serviceWorker' in navigator) { navigator.serviceWorker.register('sw.js'); }
 
         // Disable Context Menu (Long Press)
         window.oncontextmenu = (e) => { e.preventDefault(); e.stopPropagation(); return false; };
 
-        // Disable Back Button
-        history.pushState(null, null, location.href);
-        window.onpopstate = () => history.pushState(null, null, location.href);
+        // --- 3. THE LOGIN FUNCTION (FIXED) ---
+        function startShift() {
+            try {
+                const nameInput = document.getElementById('userName');
+                const name = nameInput.value.trim();
+                
+                if (!name) {
+                    alert("Please enter your name.");
+                    return;
+                }
 
-        // --- 3. WAKE LOCK (ALWAYS ON) ---
+                const startTime = new Date().toLocaleTimeString([], {hour: '2-digit', minute:'2-digit'});
+                
+                // Save Data
+                localStorage.setItem('userName', name);
+                localStorage.setItem('shiftStarted', startTime);
+                
+                // Hide Input / Show Status
+                document.getElementById('input-container').style.display = 'none';
+                updateUI("Shift Active: " + name, "Scan NFC to log", '');
+                
+                // Start Background Tasks
+                requestWakeLock();
+                startGlobalTracking();
+                startNFC();
+                
+                // Send to Google
+                syncToSheet("START", "SHIFT START", startTime);
+
+            } catch (err) {
+                alert("Error starting shift: " + err.message);
+            }
+        }
+
+        // --- 4. WAKE LOCK ---
         async function requestWakeLock() {
             if ('wakeLock' in navigator) {
                 try {
@@ -91,23 +120,30 @@
             }
         }
 
-        // --- 4. 8:00 AM KIOSK RESET ---
+        // --- 5. 8:00 AM RESET (FIXED LOGIC) ---
         function checkAutoReset() {
             const now = new Date();
             const lastReset = localStorage.getItem('lastResetDay');
             const today = now.toLocaleDateString();
 
+            // Only reset if it is past 8 AM AND we haven't done it today
             if (now.getHours() >= 8 && lastReset !== today) {
-                localStorage.clear();
-                localStorage.setItem('lastResetDay', today);
-                window.location.href = window.location.pathname + '?reset=' + Date.now();
+                // Prevent reset loop on first load by checking if user is actually logged in
+                if (localStorage.getItem('userName')) {
+                    localStorage.clear();
+                    localStorage.setItem('lastResetDay', today);
+                    window.location.href = window.location.pathname + '?reset=' + Date.now();
+                } else {
+                    // If no one is logged in, just mark today as checked so we don't reload needlessly
+                    localStorage.setItem('lastResetDay', today);
+                }
             }
         }
         setInterval(checkAutoReset, 15000);
         document.addEventListener('touchstart', checkAutoReset);
         document.addEventListener('visibilitychange', () => { if (document.visibilityState === 'visible') { checkAutoReset(); requestWakeLock(); } });
 
-        // --- 5. GPS TRACKING ---
+        // --- 6. GPS TRACKING ---
         function startGlobalTracking() {
             if ("geolocation" in navigator) {
                 navigator.geolocation.watchPosition((pos) => {
@@ -115,4 +151,94 @@
                         const pt = `${pos.coords.latitude.toFixed(6)},${pos.coords.longitude.toFixed(6)}`;
                         let currentPath = JSON.parse(localStorage.getItem('breadcrumbs')) || [];
                         if (currentPath[currentPath.length - 1] !== pt) {
-                            currentPath
+                            currentPath.push(pt);
+                            localStorage.setItem('breadcrumbs', JSON.stringify(currentPath));
+                        }
+                    }
+                }, null, { enableHighAccuracy: true, maximumAge: 0 });
+            }
+        }
+
+        // --- 7. NFC LOGIC ---
+        async function startNFC() {
+            if ("NDEFReader" in window) {
+                try {
+                    const ndef = new NDEFReader();
+                    await ndef.scan();
+                    ndef.onreading = ({ message, serialNumber }) => {
+                        if (isProcessing) return;
+                        isProcessing = true;
+                        let text = "";
+                        const decoder = new TextDecoder();
+                        for (const record of message.records) {
+                            if (record.recordType === "text") text = decoder.decode(record.data);
+                        }
+                        handleScan(text || serialNumber);
+                        setTimeout(() => isProcessing = false, 3000);
+                    };
+                } catch (e) { console.warn("NFC Error"); }
+            }
+        }
+
+        function handleScan(tagValue) {
+            const now = new Date();
+            const timeStr = now.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' });
+
+            if (!activeTag) {
+                activeTag = tagValue;
+                localStorage.setItem('activeTag', activeTag);
+                updateUI("Location Active", "Logged at: " + tagValue, 'amber');
+                syncToSheet(tagValue, "IN", timeStr);
+            } else if (activeTag === tagValue) {
+                syncToSheet(tagValue, "OUT", timeStr);
+                activeTag = null;
+                localStorage.removeItem('activeTag');
+                localStorage.removeItem('breadcrumbs'); 
+                updateUI("Location Cleared", "Ready for next scan", '');
+            } else {
+                updateUI("Wrong Tag!", "Must scan " + activeTag, 'red');
+                setTimeout(() => updateUI("Location Active", "Logged: " + activeTag, 'amber'), 3000);
+            }
+        }
+
+        // --- 8. SYNC TO GOOGLE ---
+        async function syncToSheet(tagText, action, phoneTime) {
+            let mapLink = "N/A";
+            if (action === "OUT" || action.includes("AUTO")) {
+                const storedBreadcrumbs = JSON.parse(localStorage.getItem('breadcrumbs')) || [];
+                if (storedBreadcrumbs.length > 0) {
+                    mapLink = "https://www.google.com/maps/dir/" + storedBreadcrumbs.join("/");
+                }
+            }
+            const payload = { 
+                tagText, action, phoneTime,
+                name: localStorage.getItem('userName'), 
+                shiftStarted: localStorage.getItem('shiftStarted'),
+                location: mapLink
+            };
+            // Use Try/Catch on fetch to prevent silent fails
+            try {
+                fetch(WEB_APP_URL, { method: 'POST', mode: 'no-cors', body: JSON.stringify(payload) });
+            } catch(e) { console.log("Sync Error"); }
+        }
+
+        function updateUI(status, sub, color) {
+            document.getElementById('status').innerText = status;
+            document.getElementById('sub-status').innerText = sub;
+            document.body.className = color;
+        }
+
+        // --- 9. REHYDRATE ON LOAD ---
+        window.onload = () => {
+            if (localStorage.getItem('userName')) {
+                document.getElementById('input-container').style.display = 'none';
+                activeTag = localStorage.getItem('activeTag');
+                updateUI(activeTag ? "Location Active" : "Shift Active", "Ready", activeTag ? 'amber' : '');
+                requestWakeLock();
+                startGlobalTracking();
+                startNFC();
+            }
+        };
+    </script>
+</body>
+</html>
