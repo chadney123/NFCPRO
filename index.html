@@ -8,7 +8,6 @@
     <meta name="theme-color" content="#2ecc71">
     <style>
         body { 
-            transition: background-color 0.6s ease; 
             background-color: #2ecc71; 
             font-family: sans-serif; 
             display: flex; 
@@ -20,16 +19,17 @@
             color: white; 
             text-align: center; 
             overflow: hidden;
-            /* Disable selection */
+            /* Prevent selecting text */
             -webkit-user-select: none;
             user-select: none;
-            -webkit-touch-callout: none;
         }
         .amber { background-color: #f39c12 !important; }
         .red { background-color: #e74c3c !important; }
         #status { font-size: 2.2rem; font-weight: bold; margin-bottom: 10px; padding: 0 20px; }
-        #sub-status { font-size: 1.1rem; opacity: 0.9; margin-bottom: 30px; height: 1.2em; }
+        #sub-status { font-size: 1.1rem; opacity: 0.9; margin-bottom: 30px; min-height: 1.2em; }
+        
         #input-container { width: 100%; display: flex; flex-direction: column; align-items: center; }
+        
         input { 
             padding: 18px; 
             font-size: 1.4rem; 
@@ -40,10 +40,26 @@
             max-width: 350px; 
             text-align: center; 
             color: #333;
+            /* Allow typing */
             -webkit-user-select: text;
             user-select: text;
         }
-        button { padding: 20px 50px; font-size: 1.3rem; cursor: pointer; border: none; border-radius: 50px; background: white; color: #2ecc71; font-weight: bold; box-shadow: 0 4px 15px rgba(0,0,0,0.2); }
+        
+        button { 
+            padding: 20px 50px; 
+            font-size: 1.3rem; 
+            cursor: pointer; 
+            border: none; 
+            border-radius: 50px; 
+            background: white; 
+            color: #2ecc71; 
+            font-weight: bold; 
+            box-shadow: 0 4px 15px rgba(0,0,0,0.2); 
+            /* Stop blue highlight on tap */
+            -webkit-tap-highlight-color: transparent;
+        }
+        
+        button:active { transform: scale(0.98); opacity: 0.9; }
         #lock-info { position: fixed; bottom: 15px; font-size: 0.75rem; opacity: 0.5; }
     </style>
 </head>
@@ -54,103 +70,91 @@
 
     <div id="input-container">
         <input type="text" id="userName" placeholder="Type Name Here..." autocomplete="off">
-        <button id="startBtn" onclick="startShift()">Begin Shift</button>
+        
+        <button type="button" id="startBtn">Begin Shift</button>
     </div>
 
-    <div id="lock-info">Wake Lock: Inactive | Reset: 08:00 AM</div>
+    <div id="lock-info">System Ready</div>
 
     <script>
         // --- 1. CONFIGURATION ---
-        // PASTE YOUR GOOGLE SCRIPT URL BETWEEN THE QUOTES BELOW
+        // MAKE SURE THIS URL IS CORRECT AND INSIDE THE QUOTES
         const WEB_APP_URL = "https://script.google.com/macros/s/AKfycbwRM79KhKzbj4i7T11T9azf33_ooYdc9n0RVTMLmjns69yOnwHz7FqqE5y8p6xC0IsC/exec"; 
-        
-        let activeTag = null; 
-        let breadcrumbs = [];
+
+        // --- 2. GLOBAL VARIABLES ---
+        let activeTag = null;
         let isProcessing = false;
         let wakeLock = null;
 
-        // --- 2. STARTUP LOGIC ---
-        if ('serviceWorker' in navigator) { navigator.serviceWorker.register('sw.js'); }
+        // --- 3. INITIALIZATION ---
+        window.addEventListener('load', () => {
+            console.log("App Loaded");
+            
+            // Register Service Worker
+            if ('serviceWorker' in navigator) { 
+                navigator.serviceWorker.register('sw.js').catch(console.error); 
+            }
 
-        // Disable Context Menu (Long Press)
-        window.oncontextmenu = (e) => { e.preventDefault(); e.stopPropagation(); return false; };
+            // check if already logged in
+            if (localStorage.getItem('userName')) {
+                restoreSession();
+            }
 
-        // --- 3. THE LOGIN FUNCTION (FIXED) ---
+            // Attach Button Listener safely
+            document.getElementById('startBtn').addEventListener('click', startShift);
+            
+            // Temporary Alert to prove JS is working (Remove this line later if you want)
+            // alert("App Ready - Button Active");
+        });
+
+        // --- 4. LOGIN FUNCTION ---
         function startShift() {
-            try {
-                const nameInput = document.getElementById('userName');
-                const name = nameInput.value.trim();
-                
-                if (!name) {
-                    alert("Please enter your name.");
-                    return;
-                }
+            console.log("Button Clicked");
+            const nameInput = document.getElementById('userName');
+            const name = nameInput.value.trim();
 
-                const startTime = new Date().toLocaleTimeString([], {hour: '2-digit', minute:'2-digit'});
-                
-                // Save Data
-                localStorage.setItem('userName', name);
-                localStorage.setItem('shiftStarted', startTime);
-                
-                // Hide Input / Show Status
-                document.getElementById('input-container').style.display = 'none';
-                updateUI("Shift Active: " + name, "Scan NFC to log", '');
-                
-                // Start Background Tasks
-                requestWakeLock();
-                startGlobalTracking();
-                startNFC();
-                
-                // Send to Google
-                syncToSheet("START", "SHIFT START", startTime);
-
-            } catch (err) {
-                alert("Error starting shift: " + err.message);
+            if (!name) {
+                alert("Please enter a name first.");
+                return;
             }
+
+            const startTime = new Date().toLocaleTimeString([], {hour: '2-digit', minute:'2-digit'});
+
+            // Save to Storage
+            localStorage.setItem('userName', name);
+            localStorage.setItem('shiftStarted', startTime);
+
+            // Update UI
+            document.getElementById('input-container').style.display = 'none';
+            updateUI("Shift Active: " + name, "Scan NFC to log", '');
+
+            // Start Systems
+            requestWakeLock();
+            startGlobalTracking();
+            startNFC();
+
+            // Send Data
+            syncToSheet("START", "SHIFT START", startTime);
         }
 
-        // --- 4. WAKE LOCK ---
-        async function requestWakeLock() {
-            if ('wakeLock' in navigator) {
-                try {
-                    wakeLock = await navigator.wakeLock.request('screen');
-                    document.getElementById('lock-info').innerText = "Wake Lock: ACTIVE | Reset: 08:00 AM";
-                    wakeLock.addEventListener('release', () => { setTimeout(requestWakeLock, 1000); });
-                } catch (err) { console.warn("Wake Lock Error"); }
-            }
+        function restoreSession() {
+            document.getElementById('input-container').style.display = 'none';
+            activeTag = localStorage.getItem('activeTag');
+            updateUI(activeTag ? "Location Active" : "Shift Active", "Ready", activeTag ? 'amber' : '');
+            requestWakeLock();
+            startGlobalTracking();
+            startNFC();
         }
 
-        // --- 5. 8:00 AM RESET (FIXED LOGIC) ---
-        function checkAutoReset() {
-            const now = new Date();
-            const lastReset = localStorage.getItem('lastResetDay');
-            const today = now.toLocaleDateString();
-
-            // Only reset if it is past 8 AM AND we haven't done it today
-            if (now.getHours() >= 8 && lastReset !== today) {
-                // Prevent reset loop on first load by checking if user is actually logged in
-                if (localStorage.getItem('userName')) {
-                    localStorage.clear();
-                    localStorage.setItem('lastResetDay', today);
-                    window.location.href = window.location.pathname + '?reset=' + Date.now();
-                } else {
-                    // If no one is logged in, just mark today as checked so we don't reload needlessly
-                    localStorage.setItem('lastResetDay', today);
-                }
-            }
-        }
-        setInterval(checkAutoReset, 15000);
-        document.addEventListener('touchstart', checkAutoReset);
-        document.addEventListener('visibilitychange', () => { if (document.visibilityState === 'visible') { checkAutoReset(); requestWakeLock(); } });
-
-        // --- 6. GPS TRACKING ---
+        // --- 5. GPS TRACKING ---
         function startGlobalTracking() {
             if ("geolocation" in navigator) {
                 navigator.geolocation.watchPosition((pos) => {
-                    if (pos.coords.accuracy < 50) {
+                    if (pos.coords.accuracy < 100) { // relaxed accuracy slightly
                         const pt = `${pos.coords.latitude.toFixed(6)},${pos.coords.longitude.toFixed(6)}`;
                         let currentPath = JSON.parse(localStorage.getItem('breadcrumbs')) || [];
-                        if (currentPath[currentPath.length - 1] !== pt) {
+                        // Avoid duplicates
+                        if (currentPath.length === 0 || currentPath[currentPath.length - 1] !== pt) {
                             currentPath.push(pt);
                             localStorage.setItem('breadcrumbs', JSON.stringify(currentPath));
                         }
@@ -159,7 +163,7 @@
             }
         }
 
-        // --- 7. NFC LOGIC ---
+        // --- 6. NFC LOGIC ---
         async function startNFC() {
             if ("NDEFReader" in window) {
                 try {
@@ -168,15 +172,23 @@
                     ndef.onreading = ({ message, serialNumber }) => {
                         if (isProcessing) return;
                         isProcessing = true;
+                        
                         let text = "";
                         const decoder = new TextDecoder();
                         for (const record of message.records) {
-                            if (record.recordType === "text") text = decoder.decode(record.data);
+                            if (record.recordType === "text") {
+                                text = decoder.decode(record.data);
+                            }
                         }
+                        // Fallback to serial number if tag is empty
                         handleScan(text || serialNumber);
+                        
+                        // Prevent double-scanning
                         setTimeout(() => isProcessing = false, 3000);
                     };
-                } catch (e) { console.warn("NFC Error"); }
+                } catch (e) { 
+                    console.log("NFC Error: " + e); 
+                }
             }
         }
 
@@ -185,60 +197,95 @@
             const timeStr = now.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' });
 
             if (!activeTag) {
+                // CLOCK IN
                 activeTag = tagValue;
                 localStorage.setItem('activeTag', activeTag);
                 updateUI("Location Active", "Logged at: " + tagValue, 'amber');
                 syncToSheet(tagValue, "IN", timeStr);
             } else if (activeTag === tagValue) {
+                // CLOCK OUT
                 syncToSheet(tagValue, "OUT", timeStr);
                 activeTag = null;
                 localStorage.removeItem('activeTag');
                 localStorage.removeItem('breadcrumbs'); 
                 updateUI("Location Cleared", "Ready for next scan", '');
             } else {
+                // WRONG TAG
                 updateUI("Wrong Tag!", "Must scan " + activeTag, 'red');
-                setTimeout(() => updateUI("Location Active", "Logged: " + activeTag, 'amber'), 3000);
+                setTimeout(() => {
+                    updateUI("Location Active", "Logged: " + activeTag, 'amber');
+                }, 3000);
             }
         }
 
-        // --- 8. SYNC TO GOOGLE ---
-        async function syncToSheet(tagText, action, phoneTime) {
+        // --- 7. SYNC FUNCTION ---
+        function syncToSheet(tagText, action, phoneTime) {
             let mapLink = "N/A";
+            
             if (action === "OUT" || action.includes("AUTO")) {
                 const storedBreadcrumbs = JSON.parse(localStorage.getItem('breadcrumbs')) || [];
                 if (storedBreadcrumbs.length > 0) {
                     mapLink = "https://www.google.com/maps/dir/" + storedBreadcrumbs.join("/");
                 }
             }
+
             const payload = { 
-                tagText, action, phoneTime,
+                tagText: tagText, 
+                action: action, 
+                phoneTime: phoneTime,
                 name: localStorage.getItem('userName'), 
                 shiftStarted: localStorage.getItem('shiftStarted'),
                 location: mapLink
             };
-            // Use Try/Catch on fetch to prevent silent fails
-            try {
-                fetch(WEB_APP_URL, { method: 'POST', mode: 'no-cors', body: JSON.stringify(payload) });
-            } catch(e) { console.log("Sync Error"); }
+
+            fetch(WEB_APP_URL, { 
+                method: 'POST', 
+                mode: 'no-cors', 
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify(payload) 
+            }).catch(e => console.log("Send Error: " + e));
         }
 
+        // --- 8. UTILITIES ---
         function updateUI(status, sub, color) {
             document.getElementById('status').innerText = status;
             document.getElementById('sub-status').innerText = sub;
             document.body.className = color;
         }
 
-        // --- 9. REHYDRATE ON LOAD ---
-        window.onload = () => {
-            if (localStorage.getItem('userName')) {
-                document.getElementById('input-container').style.display = 'none';
-                activeTag = localStorage.getItem('activeTag');
-                updateUI(activeTag ? "Location Active" : "Shift Active", "Ready", activeTag ? 'amber' : '');
-                requestWakeLock();
-                startGlobalTracking();
-                startNFC();
+        async function requestWakeLock() {
+            if ('wakeLock' in navigator) {
+                try {
+                    wakeLock = await navigator.wakeLock.request('screen');
+                    wakeLock.addEventListener('release', () => { 
+                        // Re-acquire lock if lost
+                        setTimeout(requestWakeLock, 1000); 
+                    });
+                } catch (err) { console.log("Wake Lock Ignored"); }
             }
-        };
+        }
+
+        // --- 9. AUTO RESET (8 AM) ---
+        function checkAutoReset() {
+            const now = new Date();
+            const lastReset = localStorage.getItem('lastResetDay');
+            const today = now.toLocaleDateString();
+
+            if (now.getHours() >= 8 && lastReset !== today) {
+                 if (localStorage.getItem('userName')) {
+                    localStorage.clear();
+                    localStorage.setItem('lastResetDay', today);
+                    window.location.reload();
+                 } else {
+                    localStorage.setItem('lastResetDay', today);
+                 }
+            }
+        }
+        setInterval(checkAutoReset, 15000);
+        
+        // Prevent Context Menu
+        window.oncontextmenu = (e) => { e.preventDefault(); return false; };
+
     </script>
 </body>
 </html>
