@@ -19,7 +19,6 @@
             color: white; 
             text-align: center; 
             overflow: hidden;
-            /* Prevent selecting text */
             -webkit-user-select: none;
             user-select: none;
         }
@@ -40,7 +39,6 @@
             max-width: 350px; 
             text-align: center; 
             color: #333;
-            /* Allow typing */
             -webkit-user-select: text;
             user-select: text;
         }
@@ -55,7 +53,6 @@
             color: #2ecc71; 
             font-weight: bold; 
             box-shadow: 0 4px 15px rgba(0,0,0,0.2); 
-            /* Stop blue highlight on tap */
             -webkit-tap-highlight-color: transparent;
         }
         
@@ -70,7 +67,6 @@
 
     <div id="input-container">
         <input type="text" id="userName" placeholder="Type Name Here..." autocomplete="off">
-        
         <button type="button" id="startBtn">Begin Shift</button>
     </div>
 
@@ -78,7 +74,7 @@
 
     <script>
         // --- 1. CONFIGURATION ---
-        // MAKE SURE THIS URL IS CORRECT AND INSIDE THE QUOTES
+        // PASTE YOUR GOOGLE SCRIPT URL HERE
         const WEB_APP_URL = "https://script.google.com/macros/s/AKfycbwRM79KhKzbj4i7T11T9azf33_ooYdc9n0RVTMLmjns69yOnwHz7FqqE5y8p6xC0IsC/exec"; 
 
         // --- 2. GLOBAL VARIABLES ---
@@ -89,27 +85,19 @@
         // --- 3. INITIALIZATION ---
         window.addEventListener('load', () => {
             console.log("App Loaded");
-            
-            // Register Service Worker
             if ('serviceWorker' in navigator) { 
                 navigator.serviceWorker.register('sw.js').catch(console.error); 
             }
-
-            // check if already logged in
             if (localStorage.getItem('userName')) {
                 restoreSession();
             }
-
-            // Attach Button Listener safely
-            document.getElementById('startBtn').addEventListener('click', startShift);
-            
-            // Temporary Alert to prove JS is working (Remove this line later if you want)
-            // alert("App Ready - Button Active");
+            // Safely attach the button click event
+            const btn = document.getElementById('startBtn');
+            if(btn) btn.addEventListener('click', startShift);
         });
 
         // --- 4. LOGIN FUNCTION ---
         function startShift() {
-            console.log("Button Clicked");
             const nameInput = document.getElementById('userName');
             const name = nameInput.value.trim();
 
@@ -120,20 +108,15 @@
 
             const startTime = new Date().toLocaleTimeString([], {hour: '2-digit', minute:'2-digit'});
 
-            // Save to Storage
             localStorage.setItem('userName', name);
             localStorage.setItem('shiftStarted', startTime);
 
-            // Update UI
             document.getElementById('input-container').style.display = 'none';
             updateUI("Shift Active: " + name, "Scan NFC to log", '');
 
-            // Start Systems
             requestWakeLock();
             startGlobalTracking();
             startNFC();
-
-            // Send Data
             syncToSheet("START", "SHIFT START", startTime);
         }
 
@@ -150,10 +133,9 @@
         function startGlobalTracking() {
             if ("geolocation" in navigator) {
                 navigator.geolocation.watchPosition((pos) => {
-                    if (pos.coords.accuracy < 100) { // relaxed accuracy slightly
+                    if (pos.coords.accuracy < 100) {
                         const pt = `${pos.coords.latitude.toFixed(6)},${pos.coords.longitude.toFixed(6)}`;
                         let currentPath = JSON.parse(localStorage.getItem('breadcrumbs')) || [];
-                        // Avoid duplicates
                         if (currentPath.length === 0 || currentPath[currentPath.length - 1] !== pt) {
                             currentPath.push(pt);
                             localStorage.setItem('breadcrumbs', JSON.stringify(currentPath));
@@ -163,25 +145,43 @@
             }
         }
 
-        // --- 6. NFC LOGIC ---
+        // --- 6. NFC LOGIC (STRICT TEXT ONLY) ---
         async function startNFC() {
             if ("NDEFReader" in window) {
                 try {
                     const ndef = new NDEFReader();
                     await ndef.scan();
+                    
                     ndef.onreading = ({ message, serialNumber }) => {
                         if (isProcessing) return;
                         isProcessing = true;
                         
                         let text = "";
                         const decoder = new TextDecoder();
+                        
+                        // Extract Text Only
                         for (const record of message.records) {
                             if (record.recordType === "text") {
                                 text = decoder.decode(record.data);
                             }
                         }
-                        // Fallback to serial number if tag is empty
-                        handleScan(text || serialNumber);
+
+                        // --- STRICT CHECK START ---
+                        // If 'text' is empty (meaning we only got a serial number), REJECT IT.
+                        if (!text) {
+                            console.log("Ignored non-text tag: " + serialNumber);
+                            updateUI("Error: Empty Tag", "This tag has no text written", 'red');
+                            setTimeout(() => {
+                                // Return to previous state
+                                if(activeTag) updateUI("Location Active", "Logged: " + activeTag, 'amber');
+                                else updateUI("Shift Active", "Scan NFC to log", '');
+                                isProcessing = false;
+                            }, 2000);
+                            return; 
+                        }
+                        // --- STRICT CHECK END ---
+
+                        handleScan(text);
                         
                         // Prevent double-scanning
                         setTimeout(() => isProcessing = false, 3000);
@@ -258,7 +258,6 @@
                 try {
                     wakeLock = await navigator.wakeLock.request('screen');
                     wakeLock.addEventListener('release', () => { 
-                        // Re-acquire lock if lost
                         setTimeout(requestWakeLock, 1000); 
                     });
                 } catch (err) { console.log("Wake Lock Ignored"); }
