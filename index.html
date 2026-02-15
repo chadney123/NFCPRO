@@ -74,7 +74,6 @@
 
     <script>
         // --- 1. CONFIGURATION ---
-        // PASTE YOUR GOOGLE SCRIPT URL HERE
         const WEB_APP_URL = "https://script.google.com/macros/s/AKfycbwRM79KhKzbj4i7T11T9azf33_ooYdc9n0RVTMLmjns69yOnwHz7FqqE5y8p6xC0IsC/exec"; 
 
         // --- 2. GLOBAL VARIABLES ---
@@ -84,14 +83,12 @@
 
         // --- 3. INITIALIZATION ---
         window.addEventListener('load', () => {
-            console.log("App Loaded");
             if ('serviceWorker' in navigator) { 
                 navigator.serviceWorker.register('sw.js').catch(console.error); 
             }
             if (localStorage.getItem('userName')) {
                 restoreSession();
             }
-            // Safely attach the button click event
             const btn = document.getElementById('startBtn');
             if(btn) btn.addEventListener('click', startShift);
         });
@@ -159,37 +156,47 @@
                         let text = "";
                         const decoder = new TextDecoder();
                         
-                        // Extract Text Only
+                        // Extract Text
                         for (const record of message.records) {
                             if (record.recordType === "text") {
                                 text = decoder.decode(record.data);
                             }
                         }
 
-                        // --- STRICT CHECK START ---
-                        // If 'text' is empty (meaning we only got a serial number), REJECT IT.
+                        // --- STRICT FILTER ---
+                        // 1. Block if no text was found (this blocks Serial Numbers/UIDs)
                         if (!text) {
-                            console.log("Ignored non-text tag: " + serialNumber);
-                            updateUI("Error: Empty Tag", "This tag has no text written", 'red');
-                            setTimeout(() => {
-                                // Return to previous state
-                                if(activeTag) updateUI("Location Active", "Logged: " + activeTag, 'amber');
-                                else updateUI("Shift Active", "Scan NFC to log", '');
-                                isProcessing = false;
-                            }, 2000);
+                            console.log("Ignored Serial Number: " + serialNumber);
+                            updateUI("Error: Bad Tag", "Tag contains no text", 'red');
+                            setTimeout(resetUI, 2000);
                             return; 
                         }
-                        // --- STRICT CHECK END ---
+
+                        // 2. Block if text is purely numbers (e.g. "12345")
+                        // We check if the trimmed text is a valid number.
+                        // !isNaN("123") is true (it IS a number), so we block it.
+                        // !isNaN("Kitchen") is false (it is NOT a number), so we allow it.
+                        if (!isNaN(text.trim())) {
+                            console.log("Ignored Numeric Text: " + text);
+                            updateUI("Error: Invalid Format", "Tag cannot be numbers only", 'red');
+                            setTimeout(resetUI, 2000);
+                            return;
+                        }
+                        // --- FILTER END ---
 
                         handleScan(text);
-                        
-                        // Prevent double-scanning
                         setTimeout(() => isProcessing = false, 3000);
                     };
                 } catch (e) { 
                     console.log("NFC Error: " + e); 
                 }
             }
+        }
+
+        function resetUI() {
+            if(activeTag) updateUI("Location Active", "Logged: " + activeTag, 'amber');
+            else updateUI("Shift Active", "Scan NFC to log", '');
+            isProcessing = false;
         }
 
         function handleScan(tagValue) {
