@@ -19,6 +19,7 @@
             color: white; 
             text-align: center; 
             overflow: hidden;
+            /* Prevent selecting text */
             -webkit-user-select: none;
             user-select: none;
         }
@@ -39,6 +40,7 @@
             max-width: 350px; 
             text-align: center; 
             color: #333;
+            /* Allow typing */
             -webkit-user-select: text;
             user-select: text;
         }
@@ -53,6 +55,7 @@
             color: #2ecc71; 
             font-weight: bold; 
             box-shadow: 0 4px 15px rgba(0,0,0,0.2); 
+            /* Stop blue highlight on tap */
             -webkit-tap-highlight-color: transparent;
         }
         
@@ -67,6 +70,7 @@
 
     <div id="input-container">
         <input type="text" id="userName" placeholder="Type Name Here..." autocomplete="off">
+        
         <button type="button" id="startBtn">Begin Shift</button>
     </div>
 
@@ -74,6 +78,7 @@
 
     <script>
         // --- 1. CONFIGURATION ---
+        // MAKE SURE THIS URL IS CORRECT AND INSIDE THE QUOTES
         const WEB_APP_URL = "https://script.google.com/macros/s/AKfycbwRM79KhKzbj4i7T11T9azf33_ooYdc9n0RVTMLmjns69yOnwHz7FqqE5y8p6xC0IsC/exec"; 
 
         // --- 2. GLOBAL VARIABLES ---
@@ -83,18 +88,28 @@
 
         // --- 3. INITIALIZATION ---
         window.addEventListener('load', () => {
+            console.log("App Loaded");
+            
+            // Register Service Worker
             if ('serviceWorker' in navigator) { 
                 navigator.serviceWorker.register('sw.js').catch(console.error); 
             }
+
+            // check if already logged in
             if (localStorage.getItem('userName')) {
                 restoreSession();
             }
-            const btn = document.getElementById('startBtn');
-            if(btn) btn.addEventListener('click', startShift);
+
+            // Attach Button Listener safely
+            document.getElementById('startBtn').addEventListener('click', startShift);
+            
+            // Temporary Alert to prove JS is working (Remove this line later if you want)
+            // alert("App Ready - Button Active");
         });
 
         // --- 4. LOGIN FUNCTION ---
         function startShift() {
+            console.log("Button Clicked");
             const nameInput = document.getElementById('userName');
             const name = nameInput.value.trim();
 
@@ -105,15 +120,20 @@
 
             const startTime = new Date().toLocaleTimeString([], {hour: '2-digit', minute:'2-digit'});
 
+            // Save to Storage
             localStorage.setItem('userName', name);
             localStorage.setItem('shiftStarted', startTime);
 
+            // Update UI
             document.getElementById('input-container').style.display = 'none';
             updateUI("Shift Active: " + name, "Scan NFC to log", '');
 
+            // Start Systems
             requestWakeLock();
             startGlobalTracking();
             startNFC();
+
+            // Send Data
             syncToSheet("START", "SHIFT START", startTime);
         }
 
@@ -130,9 +150,10 @@
         function startGlobalTracking() {
             if ("geolocation" in navigator) {
                 navigator.geolocation.watchPosition((pos) => {
-                    if (pos.coords.accuracy < 100) {
+                    if (pos.coords.accuracy < 100) { // relaxed accuracy slightly
                         const pt = `${pos.coords.latitude.toFixed(6)},${pos.coords.longitude.toFixed(6)}`;
                         let currentPath = JSON.parse(localStorage.getItem('breadcrumbs')) || [];
+                        // Avoid duplicates
                         if (currentPath.length === 0 || currentPath[currentPath.length - 1] !== pt) {
                             currentPath.push(pt);
                             localStorage.setItem('breadcrumbs', JSON.stringify(currentPath));
@@ -142,7 +163,7 @@
             }
         }
 
-        // --- 6. NFC LOGIC (STRICT TEXT ONLY) ---
+        // --- 6. NFC LOGIC (THE NUCLEAR OPTION) ---
         async function startNFC() {
             if ("NDEFReader" in window) {
                 try {
@@ -163,26 +184,24 @@
                             }
                         }
 
-                        // --- STRICT FILTER ---
-                        // 1. Block if no text was found (this blocks Serial Numbers/UIDs)
+                        // --- STRICT NO-NUMBER POLICY ---
+
+                        // Check 1: Is text empty? (Meaning it's just a Serial Number tag)
                         if (!text) {
-                            console.log("Ignored Serial Number: " + serialNumber);
-                            updateUI("Error: Bad Tag", "Tag contains no text", 'red');
-                            setTimeout(resetUI, 2000);
+                            console.log("Blocked: Empty Text / Serial Number only");
+                            showError("Invalid Tag", "Tag contains no text");
                             return; 
                         }
 
-                        // 2. Block if text is purely numbers (e.g. "12345")
-                        // We check if the trimmed text is a valid number.
-                        // !isNaN("123") is true (it IS a number), so we block it.
-                        // !isNaN("Kitchen") is false (it is NOT a number), so we allow it.
-                        if (!isNaN(text.trim())) {
-                            console.log("Ignored Numeric Text: " + text);
-                            updateUI("Error: Invalid Format", "Tag cannot be numbers only", 'red');
-                            setTimeout(resetUI, 2000);
+                        // Check 2: Does it contain ANY number (0-9)?
+                        // The regex /\d/ looks for any digit. 
+                        if (/\d/.test(text)) {
+                            console.log("Blocked: Contains numbers -> " + text);
+                            showError("Invalid Tag", "Numbers are not allowed");
                             return;
                         }
-                        // --- FILTER END ---
+                        
+                        // --- END POLICY ---
 
                         handleScan(text);
                         setTimeout(() => isProcessing = false, 3000);
@@ -193,10 +212,14 @@
             }
         }
 
-        function resetUI() {
-            if(activeTag) updateUI("Location Active", "Logged: " + activeTag, 'amber');
-            else updateUI("Shift Active", "Scan NFC to log", '');
-            isProcessing = false;
+        function showError(mainMsg, subMsg) {
+            updateUI(mainMsg, subMsg, 'red');
+            setTimeout(() => {
+                // Return to previous state
+                if(activeTag) updateUI("Location Active", "Logged: " + activeTag, 'amber');
+                else updateUI("Shift Active", "Scan NFC to log", '');
+                isProcessing = false;
+            }, 2500);
         }
 
         function handleScan(tagValue) {
@@ -265,6 +288,7 @@
                 try {
                     wakeLock = await navigator.wakeLock.request('screen');
                     wakeLock.addEventListener('release', () => { 
+                        // Re-acquire lock if lost
                         setTimeout(requestWakeLock, 1000); 
                     });
                 } catch (err) { console.log("Wake Lock Ignored"); }
